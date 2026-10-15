@@ -7,6 +7,8 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "db:push": "npx prisma db push",
+    "db:sync": "node sync-db.js",
+    "db:setup": "node sync-db.js",
     "db:studio": "npx prisma studio"
   },
   "keywords": [],
@@ -24,6 +26,7 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.12.1",
+    "mysql2": "^3.24.6",
     "redis": "^6.2.1",
     "socket.io": "^4.8.3"
   },

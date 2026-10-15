@@ -102,34 +102,24 @@ async function syncDatabase() {
     }
   }
 
-  // Step 4: Check if seeding is needed
+  // Step 4: Run updated idempotent database sync & seed
+  console.log('\n🌱 Syncing latest operational updates & sample records...');
   try {
-    const { PrismaClient } = require('@prisma/client');
-    const prisma = new PrismaClient();
-    const userCount = await prisma.user.count();
-
-    const forceSeed = process.argv.includes('--seed');
-    if (userCount === 0 || forceSeed) {
-      console.log('\n🌱 Initializing default seed data (admin, building, rooms)...');
-      await prisma.$disconnect();
-      const nodeCmd = 'node';
-      execSync(`${nodeCmd} seed.js`, {
-        stdio: 'inherit',
-        cwd: __dirname
-      });
-      console.log('✅ Seed data created successfully!');
-    } else {
-      console.log(`\nℹ️  Database contains ${userCount} user(s). Initial seed skipped.`);
-      console.log('   (Run `node sync-db.js --seed` if you ever want to re-run seed).');
-      await prisma.$disconnect();
-    }
+    const nodeCmd = 'node';
+    execSync(`${nodeCmd} seed.js`, {
+      stdio: 'inherit',
+      cwd: __dirname
+    });
+    console.log('✅ Database records, beds, tenants, and current billing cycle synced successfully!');
   } catch (seedErr) {
-    console.warn('⚠️  Could not run seed check:', seedErr.message);
+    console.warn('⚠️  Seed sync warning:', seedErr.message);
   }
 
   console.log('\n==================================================');
   console.log('🎉 Database configuration and sync complete!');
-  console.log('You can now start your server with: npm run dev');
+  console.log('   Default Login:');
+  console.log('   • Admin: owner@tavyn.com / admin123');
+  console.log('   • Staff: staff@tavyn.com / admin123');
   console.log('==================================================\n');
 }
 

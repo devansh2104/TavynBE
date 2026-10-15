@@ -79,6 +79,18 @@ const httpServer = http.createServer(app);
 const io = init(httpServer);
 io.on('connection', (socket) => {
   console.log('🔌 New WebSocket client connected: ' + socket.id);
+
+  // Allow clients to request a real-time broadcast / test ping
+  socket.on('ping_dashboard', (payload) => {
+    console.log('📡 WebSocket ping received, broadcasting dashboard_update...');
+    io.emit('dashboard_update', {
+      type: payload?.type || 'LIVE_SYNC',
+      message: payload?.message || 'Real-time sync triggered via WebSocket',
+      timestamp: new Date().toISOString(),
+      ...payload
+    });
+  });
+
   socket.on('disconnect', () => console.log('🔌 WebSocket client disconnected: ' + socket.id));
 });
 

@@ -55,6 +55,20 @@ router.post('/rent/generate-monthly', protect, authorize('HOSTEL_ADMIN', 'STAFF'
         generatedCount++;
       }
     }
+
+    try {
+      getIO().emit('dashboard_update', {
+        type: 'RENT_GENERATED',
+        count: generatedCount,
+        month,
+        year,
+        message: `Auto-generated ${generatedCount} rent bills for cycle ${month}/${year}`,
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('Socket emit warning:', e.message);
+    }
+
     res.status(201).json({ message: `Successfully generated ${generatedCount} rent records.` });
   } catch (error) {
     res.status(500).json({ error: error.message });

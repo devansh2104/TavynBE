@@ -1,6 +1,7 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { protect, authorize } = require('../middlewares/auth');
+const { getIO } = require('../utils/socket');
 const router = express.Router();
 const prisma = new PrismaClient();
 
@@ -29,6 +30,18 @@ router.post('/readings', protect, authorize('HOSTEL_ADMIN', 'STAFF'), async (req
         netAmount: net
       }
     });
+
+    try {
+      getIO().emit('dashboard_update', {
+        type: 'ELECTRICITY_LOGGED',
+        reading,
+        message: `Electricity meter logged: ${units} units (₹${net})`,
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('Socket emit warning:', e.message);
+    }
+
     res.status(201).json(reading);
   } catch (err) {
     res.status(500).json({ error: err.message });

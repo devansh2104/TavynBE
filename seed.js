@@ -205,6 +205,16 @@ async function seed() {
   for (const t of tenantsData) {
     const bed = beds[t.bedKey];
     let tenant = await prisma.tenant.findFirst({ where: { phone: t.phone } });
+
+    // Check if target bed is occupied by someone else
+    let targetBedId = null;
+    if (bed) {
+      const occupant = await prisma.tenant.findFirst({ where: { bedId: bed.id } });
+      if (!occupant || (tenant && occupant.id === tenant.id)) {
+        targetBedId = bed.id;
+      }
+    }
+
     if (!tenant) {
       tenant = await prisma.tenant.create({
         data: {
@@ -213,16 +223,16 @@ async function seed() {
           email: t.email,
           rentAmount: t.rentAmount,
           securityDeposit: t.rentAmount * 2,
-          bedId: bed ? bed.id : null,
+          bedId: targetBedId,
           status: 'Active'
         }
       });
-      if (bed) {
-        await prisma.bed.update({ where: { id: bed.id }, data: { status: 'Occupied' } });
+      if (targetBedId) {
+        await prisma.bed.update({ where: { id: targetBedId }, data: { status: 'Occupied' } });
       }
-    } else if (bed && tenant.bedId !== bed.id) {
-      await prisma.tenant.update({ where: { id: tenant.id }, data: { bedId: bed.id } });
-      await prisma.bed.update({ where: { id: bed.id }, data: { status: 'Occupied' } });
+    } else if (targetBedId && tenant.bedId !== targetBedId) {
+      await prisma.tenant.update({ where: { id: tenant.id }, data: { bedId: targetBedId } });
+      await prisma.bed.update({ where: { id: targetBedId }, data: { status: 'Occupied' } });
     }
 
     // 9. RENT & PAYMENT SYNC FOR CURRENT MONTH

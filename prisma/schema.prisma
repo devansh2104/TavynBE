@@ -1,0 +1,182 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPER_ADMIN
+  HOSTEL_ADMIN
+  STAFF
+  TENANT
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  phone     String?
+  role          Role     @default(HOSTEL_ADMIN)
+  permissions   Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  hostels       Hostel[]
+  staffProfile  StaffProfile?
+  tenantProfile Tenant?
+}
+
+model RolePermission {
+  role        Role     @id
+  permissions Json
+  updatedAt   DateTime @updatedAt
+}
+
+model Hostel {
+  id        String   @id @default(uuid())
+  adminId   String
+  admin     User     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  name      String
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  floors    Floor[]
+  expenses  Expense[]
+  staff     StaffProfile[]
+}
+
+model StaffProfile {
+  id       String @id @default(uuid())
+  userId   String @unique
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hostelId String
+  hostel   Hostel @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+}
+
+model Floor {
+  id        String   @id @default(uuid())
+  hostelId  String
+  hostel    Hostel   @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  rooms     Room[]
+}
+
+model Room {
+  id          String   @id @default(uuid())
+  floorId     String
+  floor       Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  roomNumber  String
+  capacity    Int
+  type        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  beds        Bed[]
+  electricity ElectricityReading[]
+  expenses    Expense[]
+}
+
+model Bed {
+  id        String   @id @default(uuid())
+  roomId    String
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  bedNumber String
+  status    String   @default("Available")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant    Tenant?
+}
+
+model Tenant {
+  id               String   @id @default(uuid())
+  userId           String?  @unique
+  user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  bedId            String?  @unique
+  bed              Bed?     @relation(fields: [bedId], references: [id], onDelete: SetNull)
+  name             String
+  email            String?
+  phone            String
+  emergencyContact String?
+  rentAmount       Float
+  securityDeposit  Float    @default(0)
+  maintenanceFee   Float    @default(0)
+  tenureMonths     Int?     @default(11)
+  status           String   @default("Active")
+  checkInDate      DateTime @default(now())
+  checkOutDate     DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  documents        Document[]
+  rents            Rent[]
+  payments         Payment[]
+}
+
+model Document {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type      String
+  url       String
+  createdAt DateTime @default(now())
+}
+
+model Rent {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  month       Int
+  year        Int
+  amount      Float
+  lateFee     Float    @default(0)
+  status      String   @default("Pending")
+  generatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  payments    Payment[]
+}
+
+model ElectricityReading {
+  id              String   @id @default(uuid())
+  roomId          String
+  room            Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  month           Int
+  year            Int
+  previousReading Float
+  currentReading  Float
+  unitsConsumed   Float
+  ratePerUnit     Float    @default(8.0)
+  billAmount      Float
+  netAmount       Float    @default(0.0)
+  createdAt       DateTime @default(now())
+}
+
+model Payment {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rentId      String?
+  rent        Rent?    @relation(fields: [rentId], references: [id], onDelete: Cascade)
+  amount      Float
+  method      String
+  referenceId String?
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+}
+
+model Expense {
+  id          String   @id @default(uuid())
+  hostelId    String
+  hostel      Hostel   @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  roomId      String?
+  room        Room?    @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  category    String
+  amount      Float
+  description String?
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+}

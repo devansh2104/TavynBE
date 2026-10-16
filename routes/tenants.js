@@ -17,7 +17,25 @@ router.post('/', protect, authorize('HOSTEL_ADMIN', 'STAFF'), async (req, res) =
     if (req.body.bedId) {
       await prisma.bed.update({ where: { id: req.body.bedId }, data: { status: 'Occupied' } });
     }
+
+    // Auto-create initial Rent bill for the tenant for current billing cycle
+    const now = new Date();
+    const cycleMonth = now.getMonth() + 1;
+    const cycleYear = now.getFullYear();
+    const baseAmount = (tenant.rentAmount || 0) + (tenant.maintenanceFee || 0);
+
+    const rent = await prisma.rent.create({
+      data: {
+        tenantId: tenant.id,
+        month: cycleMonth,
+        year: cycleYear,
+        amount: baseAmount,
+        status: 'Pending'
+      }
+    });
+
     getIO().emit('dashboard_update', { type: 'TENANT_ADDED', tenant });
+    getIO().emit('dashboard_update', { type: 'RENT_GENERATED', rent });
     res.status(201).json(tenant);
   } catch (err) {
     res.status(500).json({ error: err.message });

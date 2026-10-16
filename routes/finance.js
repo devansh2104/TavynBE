@@ -81,12 +81,51 @@ router.get('/rent', protect, async (req, res) => {
     const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
     const take = parseInt(limit, 10);
 
+    // Auto-ensure rent bills exist for all active tenants for the current/selected cycle
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+    const targetMonth = month ? parseInt(month, 10) : currentMonth;
+    const targetYear = year ? parseInt(year, 10) : currentYear;
+
+    const tenantScope = getTenantScope(req);
+    if (hostelId) {
+      tenantScope.bed = { room: { floor: { hostelId } } };
+    }
+    const activeTenants = await prisma.tenant.findMany({
+      where: { status: 'Active', ...tenantScope }
+    });
+
+    for (const tenant of activeTenants) {
+      const existing = await prisma.rent.findFirst({
+        where: { tenantId: tenant.id, month: targetMonth, year: targetYear }
+      });
+      if (!existing) {
+        const baseAmount = (tenant.rentAmount || 0) + (tenant.maintenanceFee || 0);
+        await prisma.rent.create({
+          data: {
+            tenantId: tenant.id,
+            month: targetMonth,
+            year: targetYear,
+            amount: baseAmount,
+            status: 'Pending'
+          }
+        });
+      }
+    }
+
     const where = {
       ...getRentScope(req)
     };
 
     if (status && status !== 'All') {
-      where.status = status;
+      if (status === 'Paid') {
+        where.status = 'Paid';
+      } else if (status === 'Pending') {
+        where.status = { not: 'Paid' };
+      } else {
+        where.status = status;
+      }
     }
 
     if (month) {
@@ -147,7 +186,9 @@ router.get('/rent', protect, async (req, res) => {
               }
             }
           },
-          payments: true
+          payments: {
+            orderBy: { date: 'desc' }
+          }
         },
         orderBy: [{ year: 'desc' }, { month: 'desc' }, { generatedAt: 'desc' }],
         skip,
@@ -155,11 +196,111 @@ router.get('/rent', protect, async (req, res) => {
       })
     ]);
 
+    // Extract unique roomIds to fetch electricity readings and active occupants
+    const roomIds = [...new Set(rents.map(r => r.tenant?.bed?.roomId).filter(Boolean))];
+
+    // Find electricity readings for these rooms
+    const electricityReadings = roomIds.length > 0
+      ? await prisma.electricityReading.findMany({
+          where: { roomId: { in: roomIds } },
+          orderBy: { createdAt: 'desc' }
+        })
+      : [];
+
+    // Find all active tenants in these rooms to count occupied beds per room
+    const activeTenantsInRooms = roomIds.length > 0
+      ? await prisma.tenant.findMany({
+          where: {
+            status: 'Active',
+            bed: { roomId: { in: roomIds } }
+          },
+          select: {
+            id: true,
+            bedId: true,
+            bed: { select: { roomId: true, bedNumber: true } }
+          }
+        })
+      : [];
+
+    const roomOccupantsCount = {};
+    activeTenantsInRooms.forEach(t => {
+      const rId = t.bed?.roomId;
+      if (rId) {
+        roomOccupantsCount[rId] = (roomOccupantsCount[rId] || 0) + 1;
+      }
+    });
+
+    const enrichedRents = rents.map(rent => {
+      const roomId = rent.tenant?.bed?.roomId;
+      
+      // Match reading for this room and cycle (month & year)
+      const cycleReading = electricityReadings.find(
+        er => er.roomId === roomId && er.month === rent.month && er.year === rent.year
+      ) || electricityReadings.find(er => er.roomId === roomId);
+
+      const roomBill = cycleReading ? (cycleReading.netAmount || cycleReading.billAmount || 0) : 0;
+      const occupiedBeds = Math.max(1, roomOccupantsCount[roomId] || rent.tenant?.bed?.room?.capacity || 1);
+      
+      // Electricity share per occupied bed in this room
+      const electricityShare = roomBill > 0 ? Math.round((roomBill / occupiedBeds) * 100) / 100 : 0;
+      
+      const rentBase = rent.tenant?.rentAmount ?? 0;
+      const maintenanceFee = rent.tenant?.maintenanceFee ?? 0;
+      const lateFee = rent.lateFee ?? 0;
+      const calculatedTotal = rentBase + maintenanceFee + electricityShare + lateFee;
+
+      // Dynamic payments and status determination
+      const totalPaid = (rent.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+      const outstandingBalance = Math.max(0, calculatedTotal - totalPaid);
+
+      let dynamicStatus = rent.status;
+      if (totalPaid >= calculatedTotal && calculatedTotal > 0) {
+        dynamicStatus = 'Paid';
+      } else if (totalPaid === 0) {
+        dynamicStatus = 'Pending';
+      } else {
+        const unpaidAmount = calculatedTotal - totalPaid;
+        if (Math.abs(unpaidAmount - electricityShare) < 1 && electricityShare > 0) {
+          dynamicStatus = 'Electricity Due';
+        } else if (Math.abs(unpaidAmount - maintenanceFee) < 1 && maintenanceFee > 0) {
+          dynamicStatus = 'Maintenance Due';
+        } else if (Math.abs(unpaidAmount - (electricityShare + maintenanceFee)) < 1) {
+          dynamicStatus = 'Electricity & Maint. Due';
+        } else if (Math.abs(totalPaid - (electricityShare + maintenanceFee)) < 1 && rentBase > 0) {
+          dynamicStatus = 'Rent Due';
+        } else {
+          dynamicStatus = 'Partial Due';
+        }
+      }
+
+      // Dynamic itemized breakdown string (only show active non-zero components)
+      const breakdownParts = [];
+      if (rentBase > 0) breakdownParts.push(`Rent ₹${rentBase.toLocaleString()}`);
+      if (electricityShare > 0) breakdownParts.push(`Elec ₹${electricityShare.toLocaleString()}`);
+      if (maintenanceFee > 0) breakdownParts.push(`Maint ₹${maintenanceFee.toLocaleString()}`);
+      if (lateFee > 0) breakdownParts.push(`Late ₹${lateFee.toLocaleString()}`);
+      const dynamicBreakdown = breakdownParts.length > 0 ? breakdownParts.join(' + ') : `Rent ₹${rentBase.toLocaleString()}`;
+
+      return {
+        ...rent,
+        status: dynamicStatus,
+        electricityAmount: electricityShare,
+        roomElectricityTotal: roomBill,
+        roomOccupiedBeds: occupiedBeds,
+        rentAmount: rentBase,
+        maintenanceAmount: maintenanceFee,
+        totalBilledAmount: calculatedTotal,
+        totalPaidAmount: totalPaid,
+        outstandingBalance: outstandingBalance,
+        breakdownLabel: dynamicBreakdown
+      };
+    });
+
     res.json({
       total,
       page: parseInt(page, 10),
       totalPages: Math.ceil(total / take) || 1,
-      rents
+      rents: enrichedRents
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -169,29 +310,61 @@ router.get('/rent', protect, async (req, res) => {
 // PAYMENTS
 router.post('/payments', protect, authorize('HOSTEL_ADMIN', 'STAFF', 'TENANT'), async (req, res) => {
   try {
-    const { tenantId, rentId, amount, method, referenceId } = req.body;
+    const { tenantId, rentId, amount, method, referenceId, status, paidComponents } = req.body;
     if (req.user.role === 'TENANT' && req.access.tenantId !== tenantId) {
       return res.status(403).json({ message: 'Unauthorized' });
     }
 
     const payment = await prisma.$transaction(async (tx) => {
+      let refText = referenceId || '';
+      if (paidComponents) {
+        const parts = [];
+        if (paidComponents.rent) parts.push('Rent');
+        if (paidComponents.electricity) parts.push('Electricity');
+        if (paidComponents.maintenance) parts.push('Maintenance');
+        const compSummary = parts.length > 0 ? `Paid: ${parts.join(', ')}` : 'Partial Payment';
+        refText = refText ? `${refText} [${compSummary}]` : compSummary;
+      }
+
       const p = await tx.payment.create({
         data: {
           tenantId,
-          rentId,
+          rentId: rentId || null,
           amount: parseFloat(amount),
           method: method || 'UPI',
-          referenceId
+          referenceId: refText || null
         }
       });
+
       if (rentId) {
+        let targetStatus = status || 'Paid';
+        if (!status && paidComponents) {
+          const unpaid = [];
+          if (!paidComponents.rent) unpaid.push('Rent');
+          if (!paidComponents.electricity) unpaid.push('Electricity');
+          if (!paidComponents.maintenance) unpaid.push('Maintenance');
+
+          if (unpaid.length === 0) {
+            targetStatus = 'Paid';
+          } else if (unpaid.length === 1) {
+            targetStatus = `${unpaid[0]} Due`;
+          } else if (unpaid.includes('Electricity') && unpaid.includes('Maintenance') && !unpaid.includes('Rent')) {
+            targetStatus = 'Electricity & Maint. Due';
+          } else if (unpaid.includes('Rent') && unpaid.includes('Electricity')) {
+            targetStatus = 'Rent & Electricity Due';
+          } else {
+            targetStatus = 'Partial Due';
+          }
+        }
+
         await tx.rent.updateMany({
           where: { id: rentId, ...getRentScope(req) },
-          data: { status: 'Paid' }
+          data: { status: targetStatus }
         });
       }
       return p;
     });
+
     getIO().emit('dashboard_update', { type: 'PAYMENT_RECEIVED', payment });
     res.status(201).json(payment);
   } catch (error) {
